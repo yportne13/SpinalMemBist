@@ -11,23 +11,25 @@ class Bist extends BistCtrl {
   }
 
   override def tasks: Unit = {
-    mems.foreach{case (count, width, bundle, memcomponent, task) =>
-      this.rework {
-        val bist = master(cloneOf(bundle))
-        bist.wr_addr := 0
-        bist.wr_clk  := ClockDomain.current.readClockWire
-        bist.wr_data := 0
-        bist.wr_en   := io.en
-        bist.wr_mask := 0
-        bist.rd_addr := 0
-        bist.rd_clk  := ClockDomain.current.readClockWire
-        bist.rd_en   := io.en
-        task(bist, memcomponent)
+    mems.groupBy(x => (x._1, x._2))
+      .foreach{case ((cnt, width), mems) =>
+        val wr_addr = Counter(cnt, io.en)
+        mems.foreach{case (count, width, bundle, memcomponent, task) =>
+          this.rework {
+            val bist = master(cloneOf(bundle))
+            bist.wr_addr := wr_addr.value
+            bist.wr_clk  := ClockDomain.current.readClockWire
+            bist.wr_data := 0
+            bist.wr_en   := io.en
+            bist.wr_mask := 0
+            bist.rd_addr := 0
+            bist.rd_clk  := ClockDomain.current.readClockWire
+            bist.rd_en   := io.en
+            task(bist, memcomponent)
+          }
+        }
       }
-    }
   }
-
-  
 }
 
 class toplevel extends Component {
