@@ -1,4 +1,4 @@
-package ToTopIo
+package main.ExtendSignal
 
 import spinal.core._
 import spinal.core.internals.PhaseMemBlackBoxingWithPolicy
@@ -7,6 +7,18 @@ import spinal.core.internals.Expression
 import spinal.lib._
 import spinal.core.internals.PhaseNetlist
 import spinal.core.internals.PhaseContext
+
+case class MemBistEn(mem: Mem[_]) extends SpinalTag {
+
+}
+
+package object MemLib {
+  implicit class MemBistEnPort[T <: Data](mem: Mem[T]) {
+    def bistEn(that: Bool) {
+      that.addTag(MemBistEn(mem))
+    }
+  }
+}
 
 class Ram_1w_1rs_bist(
   val wordWidth      : Int,
@@ -64,85 +76,6 @@ class Ram_1w_1rs_bist(
   noIoPrefix()
 }
 
-class Multi_Ram_Wrapper(
-  val wordWidth      : Int,
-  val wordCount      : Int,
-  val readUnderWrite : ReadUnderWritePolicy = dontCare,
-  val technology     : MemTechnologyKind = auto,
-
-  val wrClock        : ClockDomain,
-  val wrAddressWidth : Int,
-  val wrDataWidth    : Int,
-  val wrMaskWidth    : Int = 1,
-  val wrMaskEnable   : Boolean = false,
-
-  val rdClock        : ClockDomain,
-  val rdAddressWidth : Int,
-  val rdDataWidth    : Int
-) extends Component {
-
-  val io = new Bundle {
-    val wr = new Bundle {
-      val clk  = in Bool()
-      val en   = in Bool()
-      val mask = in Bits(wrMaskWidth bits)
-      val addr = in UInt(wrAddressWidth bit)
-      val data = in Bits(wrDataWidth bit)
-    }
-
-    val rd = new Bundle {
-      val clk  = in Bool()
-      val en   = in Bool()
-      val addr = in  UInt(rdAddressWidth bit)
-      val data = out Bits(rdDataWidth bit)
-    }
-
-    val bist_en = in Bool()
-  }
-
-  this.parent.rework {
-    io.wr.clk := wrClock.readClockWire
-    io.rd.clk := rdClock.readClockWire
-  }
-
-  val sepBy = 32
-  val memNum = 1 << log2Up(wordCount/sepBy)
-  require(wordCount/memNum*memNum == wordCount)
-  val mems = (0 until memNum).map(idx => {
-    val mem = new Ram_1w_1rs_bist(
-      wordWidth,
-      wordCount/memNum,
-      readUnderWrite,
-      technology,
-      new ClockDomain(io.wr.clk),
-      wrAddressWidth-log2Up(wordCount/sepBy),
-      wrDataWidth,
-      wrMaskWidth,
-      wrMaskEnable,
-      new ClockDomain(io.rd.clk),
-      rdAddressWidth-log2Up(wordCount/sepBy),
-      rdDataWidth
-    )
-    mem.io.wr.data := io.wr.data
-    mem.io.wr.mask := io.wr.mask
-    mem.io.wr.en := io.wr.en && (io.wr.addr(log2Up(wordCount/sepBy)-1 downto 0) === idx)
-    mem.io.wr.addr := io.wr.addr(io.wr.addr.getWidth - 1 downto log2Up(wordCount/sepBy))
-
-    mem.io.rd.addr := io.rd.addr(io.rd.addr.getWidth - 1 downto log2Up(wordCount/sepBy))
-    mem.io.rd.en := io.rd.en && (io.rd.addr(log2Up(wordCount/sepBy)-1 downto 0) === idx)
-    if(idx == 0) {
-      io.rd.data := mem.io.rd.data
-    } else {
-      when(mem.io.rd.addr(log2Up(wordCount/sepBy)-1 downto 0) === idx) {
-        io.rd.data := mem.io.rd.data
-      }
-    }
-
-    mem.io.bist_en := io.bist_en
-  })
-
-}
-
 class PhaseMemBlackBoxingDefault(policy: MemBlackboxingPolicy = blackboxAll) extends PhaseMemBlackBoxingWithPolicy(policy){
   def doBlackboxing(topo: MemTopology): String = {
     val mem = topo.mem
@@ -162,9 +95,6 @@ class PhaseMemBlackBoxingDefault(policy: MemBlackboxingPolicy = blackboxAll) ext
       super.removeMem(mem)
     }
 
-    // use blackbox mem or not
-    val useBlack = mem.getWidth * mem.wordCount > 10*8
-    if(useBlack)
     if (mem.initialContent != null) {
       return "Can't blackbox ROM"  //TODO
       //      } else if (topo.writes.size == 1 && topo.readsAsync.size == 1 && topo.portCount == 2) {
@@ -206,37 +136,7 @@ class PhaseMemBlackBoxingDefault(policy: MemBlackboxingPolicy = blackboxAll) ext
 
         for (rd <- topo.readsSync) {
           //use blackbox that with bist port
-          val ram: Component {
-            val io: Bundle {
-              val wr: Bundle {
-                val clk : Bool
-                val en  : Bool
-                val mask: Bits
-                val addr: UInt
-                val data: Bits
-              }
-              val rd: Bundle {
-                val clk : Bool
-                val en  : Bool
-                val addr: UInt
-                val data: Bits
-              }
-              val bist_en: Bool
-            }
-          } = if(mem.wordCount <= 32) new Ram_1w_1rs_bist(
-            wordWidth = mem.getWidth,
-            wordCount = mem.wordCount,
-            wrClock = wr.clockDomain,
-            rdClock = rd.clockDomain,
-            wrAddressWidth = wr.getAddressWidth,
-            wrDataWidth = wr.data.getWidth,
-            rdAddressWidth = rd.getAddressWidth,
-            rdDataWidth = rd.getWidth,
-            wrMaskWidth = if (wr.mask != null) wr.mask.getWidth else 1,
-            wrMaskEnable = wr.mask != null,
-            readUnderWrite = rd.readUnderWrite,
-            technology = mem.technology
-          ) else new Multi_Ram_Wrapper(
+          val ram = new Ram_1w_1rs_bist(
             wordWidth = mem.getWidth,
             wordCount = mem.wordCount,
             wrClock = wr.clockDomain,
@@ -264,10 +164,20 @@ class PhaseMemBlackBoxingDefault(policy: MemBlackboxingPolicy = blackboxAll) ext
           ram.io.rd.addr.assignFrom(rd.address)
           wrapConsumers(rd, ram.io.rd.data)
 
-          //find the top module
-          val toplevel = mem.component.parents().headOption.getOrElse(mem.component)
-          ram.io.bist_en := toplevel.asInstanceOf[Component{
-            val io: Bundle{val bist_en: Bool}}].io.bist_en.pull()
+          // connect the extend signal
+          mem.component.dslBody.walkStatements{
+            case s: Bool => {
+              s.getTags().foreach{
+                case MemBistEn(m) => {
+                  if(mem == m){
+                    ram.io.bist_en := s
+                  }
+                }
+                case _ =>
+              }
+            }
+            case _ =>
+          }
 
           ram.setName(mem.getName())
         }

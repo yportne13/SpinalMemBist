@@ -13,11 +13,8 @@ class ResizeCheck extends PhaseNetlist {
     pc.topLevel.walkComponents(c => {
       c.dslBody.foreachStatements{
         case as: AssignmentStatement => {
-          println(as)
           as.source match {
             case s: BaseType => {
-              if(s.hasTag(tagAutoResize))
-                println(s"--- ${as} ---")
               if(s.hasTag(tagAutoResize))
               as.target match {
                 case t: BaseType => {
